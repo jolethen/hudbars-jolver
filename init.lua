@@ -468,8 +468,8 @@ end
 
 --register built-in HUD bars
 if minetest.settings:get_bool("enable_damage") or hb.settings.forceload_default_hudbars then
-	hb.register_hudbar("health", 0xFFFFFF, S("Health"), { bar = "hudbars_bar_health.png", icon = "hudbars_icon_health.png", bgicon = "hudbars_bgicon_health.png" }, 20, 20, false)
-	hb.register_hudbar("breath", 0xFFFFFF, S("Breath"), { bar = "hudbars_bar_breath.png", icon = "hudbars_icon_breath.png", bgicon = "hudbars_bgicon_breath.png" }, 10, 10, true)
+	hb.register_hudbar("health", 0xFFFFFF, S("Health"), { bar = "hudbars_bar_health.png", icon = "hudbars_icon_health.png", bgicon = "hudbars_bgicon_health.png" }, hb.settings.hp_player_maximun, hb.settings.hp_player_maximun, false)
+	hb.register_hudbar("breath", 0xFFFFFF, S("Breath"), { bar = "hudbars_bar_breath.png", icon = "hudbars_icon_breath.png", bgicon = "hudbars_bgicon_breath.png" }, hb.settings.br_player_maximun, hb.settings.br_player_maximun, true)
 end
 
 local function hide_builtin(player)
@@ -489,27 +489,22 @@ local function custom_hud(player)
 			hide = true
 		end
 		local hp = player:get_hp()
-		local hp_max = player:get_properties().hp_max
+		local hp_max = player:get_properties().hp_max or hb.settings.hp_player_maximun
+		hb.init_hudbar(player, "health", math.min(hp, hp_max), hp_max, hide)
 		local breath = player:get_breath()
-		local breath_max = player:get_properties().breath_max
+		local breath_max = player:get_properties().breath_max or hb.settings.br_player_maximun
 		local hide_breath
+		-- real honoring to configuration of max hp custom heal and breath, https://github.com/minetest/minetest/commit/f7d50a80782376d2e1c068e4d0a7ce9632f28bda
+		if player:get_properties().hp_max then player:set_properties({hp_max = hb.settings.hp_player_maximun}) end
+		if player:get_properties().breath_max then player:set_properties({breath_max = hb.settings.br_player_maximun}) end
 		-- workaround bug https://github.com/minetest/minetest/issues/12350
-		hb.init_hudbar(player, "health", hp, hp_max, hide)		
-		if hp_max then
-			hb.init_hudbar(player, "health", math.min(hp, hp_max), hp_max, hide)
-		end
-		-- workaround bug https://github.com/minetest/minetest/issues/12350
-		if breath == 11 and hb.settings.autohide_breath == true then hide_breath = true else hide_breath = false end
-		hb.init_hudbar(player, "breath", math.min(breath, 10), breath_max, hide_breath or hide)
-		if breath_max then
-			if breath >= breath_max and hb.settings.autohide_breath == true then hide_breath = true else hide_breath = false end
-			hb.init_hudbar(player, "breath", math.min(breath, breath_max), breath_max, hide_breath or hide)
-		end
+		if breath >= breath_max and hb.settings.autohide_breath == true then hide_breath = true else hide_breath = false end
+		hb.init_hudbar(player, "breath", math.min(breath, breath_max), breath_max, hide_breath or hide)
 	end
 end
 
 local function update_health(player)
-	local hp_max = player:get_properties().hp_max
+	local hp_max = hb.settings.hp_player_maximun
 	local hp = math.min(player:get_hp(), hp_max)
 	hb.change_hudbar(player, "health", hp, hp_max)
 end
@@ -522,12 +517,9 @@ local function update_hud(player)
 			hb.unhide_hudbar(player, "health")
 		end
 		--air
-		local breath_max = 10
-		local breath = player:get_breath()
+		local breath_max = player:get_properties().breath_max or hb.settings.br_player_maximun
 		-- workaround bug https://github.com/minetest/minetest/issues/12350
-		if player:get_properties() then
-			if player:get_properties().breath_max then breath_max = player:get_properties().breath_max end
-		end
+		local breath = player:get_breath()
 		
 		if breath >= breath_max and hb.settings.autohide_breath == true then
 			hb.hide_hudbar(player, "breath")
