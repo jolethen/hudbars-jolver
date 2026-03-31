@@ -62,6 +62,7 @@ Translations:
 * Spanish: wuniversales
 * French: syl
 * Ukrainian: FromKaniv
+* Chinese (Simplified): w0rr1z
 
 This program is free software. It comes without any warranty, to
 the extent permitted by applicable law. You can redistribute it
