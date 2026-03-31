@@ -21,6 +21,25 @@ standard.
 This mod can be configured quite a bit. You can change HUD bar appearance, offsets, ordering, and more.
 Use the advanced settings menu in Luanti for detailed configuration.
 
+## Troubleshooting
+
+### Rendering issues with the HUD bars
+
+If the HUD bars look strange and you have any of the following problems:
+
+* The bars do not get “filled” correctly
+* Text too large or too small
+* Stuff is weirdly offset
+
+Then try the following (one after the other, until the problem is resolved):
+
+* Make sure to use the latest Luanti version
+* Make sure your settings `gui_scaling` and `hud_scaling` are equal
+* Use a different font
+* Use a different font size
+
+If the problem persists, then this might just be due to a longstanding bug in this mod, see: <https://codeberg.org/Wuzzy/minetest_hudbars/issues/1>
+
 ## API
 The API is used to add your own custom HUD bars.
 Documentation for the API of this mod can be found in `API.md`.
