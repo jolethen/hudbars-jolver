@@ -614,24 +614,79 @@ end)
 
 
 -- =====================================================================
--- FINAL COMPREHENSIVE MOBILE BORDER FLUSH OVERRIDE
+-- MASTER RE-RENDERING OVERRIDE & CHAT COMMANDS
+-- Append this directly to the very bottom of your hudbars/init.lua file
 -- =====================================================================
 
+-- 1. FIX THE RESOLUTION CLIPPING GAP AT 100% MAXIMUM
 local original_value_to_barlength = hb.value_to_barlength
-
 function hb.value_to_barlength(value, max)
-	-- 1. Get the original calculation first
 	local ret = original_value_to_barlength(value, max)
-
-	-- 2. Run our safety checks safely inside the function bounds
 	if hb.settings.bar_type == "progress_bar" and max > 0 and ret > 0 then
-		-- Triggers if the bar is 100% full OR within a tiny fraction (for uneven high stats)
-		if value >= (max - (max * 0.001)) then
-			-- Force the engine to draw the bar at maximum configured width plus a 2-pixel expansion
+		if value == max then
 			return hb.settings.max_bar_length + 2
 		end
 	end
-
-	-- 3. Return the standard calculation if the bar isn't full
 	return ret
 end
+
+-- 2. FORCE HIGH-CONTRAST WHITE TEXT FOR NUMBERS
+local original_register_hudbar = hb.register_hudbar
+function hb.register_hudbar(identifier, text_color, label, textures, default_start_value, default_start_max, default_start_hidden, format_string)
+	text_color = 0xFFFFFF -- Crisp white text
+	original_register_hudbar(identifier, text_color, label, textures, default_start_value, default_start_max, default_start_hidden, format_string)
+end
+
+-- 3. FIX VANISHING TEXT NUMBERS (LAYER ORDER BUG)
+minetest.register_on_joinplayer(function(player)
+	minetest.after(0.5, function()
+		if player and player:is_player() then
+			for identifier, _ in pairs(hb.hudtables) do
+				local state = hb.get_hudbar_state(player, identifier)
+				if state and not state.hidden then
+					hb.change_hudbar(player, identifier, state.value, state.max)
+				end
+			end
+		end
+	end)
+end)
+
+-- 4. NEW COMMAND: SET MAX HP
+minetest.register_chatcommand("setmaxhp", {
+	params = "<player> <max_hp>",
+	description = "Set a player's maximum health pool",
+	privs = { server = true }, -- Only server admins can use this
+	func = function(name, param)
+		-- Separate the player name and the HP value from the chat input
+		local target_name, hp_str = string.match(param, "([^%s]+)%s+(%d+)")
+		
+		if not target_name or not hp_str then
+			return false, "Usage: /setmaxhp <player> <max_hp>"
+		end
+		
+		local target_player = minetest.get_player_by_name(target_name)
+		if not target_player then
+			return false, "Player '" .. target_name .. "' is not online."
+		end
+		
+		local new_max = tonumber(hp_str)
+		if new_max <= 0 then
+			return false, "Max HP must be greater than 0."
+		end
+		
+		-- Update Luanti's engine property for the player's max health
+		target_player:set_properties({ hp_max = new_max })
+		
+		-- If their current health is higher than the new max, cap it
+		if target_player:get_hp() > new_max then
+			target_player:set_hp(new_max)
+		end
+		
+		-- Instantly tell hudbars to re-draw the health bar with the new limits
+		hb.change_hudbar(target_player, "health", target_player:get_hp(), new_max)
+		
+		-- Send confirmation messages
+		minetest.chat_send_player(target_name, name .. " has set your max health to " .. new_max)
+		return true, "Successfully set " .. target_name .. "'s max HP to " .. new_max
+	end,
+})
