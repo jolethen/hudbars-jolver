@@ -612,96 +612,87 @@ minetest.register_globalstep(function(dtime)
 	if timer > 4 then timer = 0 end
 end)
 
-
 -- =====================================================================
--- MASTER HUD BARS FIX (SYNTAX REPAIRED)
--- Append this directly to the very bottom of your hudbars/init.lua file
+-- THE FIX: FORCE TEXT NUMBER OVERLAY & PREVENT OVER-HEALING
 -- =====================================================================
 
--- 1. FIX THE RESOLUTION CLIPPING GAP AT 100% MAXIMUM
-local original_value_to_barlength = hb.value_to_barlength
-function hb.value_to_barlength(value, max)
-	local ret = original_value_to_barlength(value, max)
-	if hb.settings.bar_type == "progress_bar" and max > 0 and ret > 0 then
-		if value == max then
-			return hb.settings.max_bar_length + 2
+-- 1. FIX THE TEXT OVERLAY (Forces numbers to sit on top of the health fill texture)
+local original_init_hudbar = hb.init_hudbar
+function hb.init_hudbar(player, identifier, start_value, start_max, start_hidden)
+	local success = original_init_hudbar(player, identifier, start_value, start_max, start_hidden)
+	
+	if success and player and player:is_player() and hb.settings.bar_type == "progress_bar" then
+		local name = player:get_player_name()
+		local hudtable = hb.get_hudtable(identifier)
+		
+		if hudtable and hudtable.hudids[name] and hudtable.hudids[name].text then
+			-- Remove the old buried text element
+			player:hud_remove(hudtable.hudids[name].text)
+			
+			-- Re-create it at the exact same location so it loads LAST (on top)
+			local pos, offset = barindex_to_pos_and_offset(math.floor(hb.get_hudbar_position_index(identifier)))
+			local state = hudtable.hudstate[name]
+			local text = string.format(hudtable.format_string, hudtable.label, state.value, state.max)
+			
+			hudtable.hudids[name].text = player:hud_add({
+				hud_elem_type = "text",
+				position = pos,
+				text = text,
+				alignment = {x=1,y=1},
+				number = 0xFFFFFF, -- Force crisp white text color
+				direction = 0,
+				offset = { x = offset.x + 2,  y = offset.y - 1},
+			})
 		end
 	end
-	return ret
+	return success
 end
 
--- 2. FORCE HIGH-CONTRAST WHITE TEXT FOR NUMBERS
-local original_register_hudbar = hb.register_hudbar
-function hb.register_hudbar(identifier, text_color, label, textures, default_start_value, default_start_max, default_start_hidden, format_string)
-	text_color = 0xFFFFFF -- Crisp white text
-	original_register_hudbar(identifier, text_color, label, textures, default_start_value, default_start_max, default_start_hidden, format_string)
-end
-
--- 3. INTERCEPT HUD LAYER GENERATION TO FORCE LAYER ORDER (Z-INDEX)
-local original_hud_add = minetest.hud_add
-function minetest.hud_add(player, hud_definition)
-	if hud_definition and hud_definition.hud_elem_type == "text" then
-		hud_definition.z_index = 100 -- Force text to stay in front of everything
-	elseif hud_definition and hud_definition.hud_elem_type == "image" then
-		hud_definition.z_index = 1   -- Keep color bars in the background
-	end
-	return original_hud_add(player, hud_definition)
-end
-
--- 4. AUTOMATIC POSITION & VALUE REFRESH LOOP (PREVENTS HP CLIMBING)
-local timer = 0
+-- 2. LOOP REFRESH (Caps current HP to Max HP so it doesn't infinitely climb)
+local sync_timer = 0
 minetest.register_globalstep(function(dtime)
-	timer = timer + dtime
-	if timer >= 0.2 then
-		timer = 0
+	sync_timer = sync_timer + dtime
+	if sync_timer >= 0.15 then
+		sync_timer = 0
 		for _, player in pairs(minetest.get_connected_players()) do
 			if player and player:is_player() then
 				local current_hp = player:get_hp()
 				local max_hp = player:get_properties().hp_max or 20
 				
-				-- If external mods push HP past the limit, snap it right back
 				if current_hp > max_hp then
 					player:set_hp(max_hp)
-					current_hp = max_hp
+					hb.change_hudbar(player, "health", max_hp, max_hp)
 				end
-				
-				-- Actively push visual updates back onto the client screen
-				hb.change_hudbar(player, "health", current_hp, max_hp)
 			end
 		end
 	end
 end)
 
--- 5. NEW COMMAND: SET MAX HP (SYNTAX TYPO REMOVED)
+-- 3. COMMAND: SET MAX HP
 minetest.register_chatcommand("setmaxhp", {
 	params = "<player> <max_hp>",
 	description = "Set a player's maximum health pool",
 	privs = { server = true }, 
 	func = function(name, param)
 		local target_name, hp_str = string.match(param, "([^%s]+)%s+(%d+)")
-		
 		if not target_name or not hp_str then
 			return false, "Usage: /setmaxhp <player> <max_hp>"
 		end
-		
 		local target_player = minetest.get_player_by_name(target_name)
 		if not target_player then
 			return false, "Player '" .. target_name .. "' is not online."
 		end
-		
 		local new_max = tonumber(hp_str)
 		if new_max <= 0 then
 			return false, "Max HP must be greater than 0."
 		end
 		
 		target_player:set_properties({ hp_max = new_max })
-		
 		if target_player:get_hp() > new_max then
 			target_player:set_hp(new_max)
 		end
 		
 		hb.change_hudbar(target_player, "health", target_player:get_hp(), new_max)
-		
 		minetest.chat_send_player(target_name, name .. " has set your max health to " .. new_max)
 		return true, "Successfully set " .. target_name .. "'s max HP to " .. new_max
 	end,
