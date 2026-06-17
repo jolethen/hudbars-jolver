@@ -611,3 +611,29 @@ minetest.register_globalstep(function(dtime)
 	end
 	if timer > 4 then timer = 0 end
 end)
+
+
+-- =====================================================================
+-- MOBILE GAP OVERRIDE FOR HUDBARS
+-- Append this directly to the very bottom of your hudbars/init.lua file
+-- =====================================================================
+
+-- 1. Save the original function so we don't break underlying mod features
+local original_value_to_barlength = hb.value_to_barlength
+
+-- 2. Create the override wrapper
+function hb.value_to_barlength(value, max)
+	-- Run the original logic first to get the standard pixel width calculation
+	local ret = original_value_to_barlength(value, max)
+
+	-- Apply the gap patch ONLY for flat progress bars
+	if hb.settings.bar_type == "progress_bar" and max > 0 and ret > 0 then
+		-- Check if the player is at 100% or within a tiny sliver of max stats
+		-- This seamlessly handles 20/20 HP as well as large values like 6221/6224 HP
+		if value >= (max - (max * 0.001)) then
+			ret = ret + 2 -- Force the 2px texture to repeat one extra time flush to the border
+		end
+	end
+
+	return ret
+end
