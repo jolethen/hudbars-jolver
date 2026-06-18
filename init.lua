@@ -611,30 +611,58 @@ minetest.register_globalstep(function(dtime)
 	end
 	if timer > 4 then timer = 0 end
 end)
-
 -- =====================================================================
--- REPAIRED LAYER SYNC & UTILITIES
+-- REPAIRED LAYER SYNC & UTILITIES (FIXED FOR ENGINE BUILT-INS)
 -- =====================================================================
 
--- 1. LAYER FIX: Forces the text element to sit explicitly on top whenever a bar changes
-local original_change_hudbar = hb.change_hudbar
-function hb.change_hudbar(player, identifier, new_value, new_max_value, new_icon, new_bgicon, new_bar, new_label, new_text_color)
-	-- Run original update logic safely first
-	local success = original_change_hudbar(player, identifier, new_value, new_max_value, new_icon, new_bgicon, new_bar, new_label, new_text_color)
+-- Helper to force text elements to render last
+local function force_text_on_top(player, identifier)
+	if not player or not player:is_player() then return end
+	local name = player:get_player_name()
+	local hudtable = hb.get_hudtable(identifier)
 	
-	if success and player and player:is_player() then
-		local name = player:get_player_name()
-		local hudtable = hb.get_hudtable(identifier)
+	if hudtable and hudtable.hudids[name] and hudtable.hudids[name].text then
+		local old_text_id = hudtable.hudids[name].text
+		local state = hudtable.hudstate[name]
 		
-		-- Force the text layer over the builtin progress textures using z_index priority
-		if hudtable and hudtable.hudids[name] and hudtable.hudids[name].text then
-			player:hud_change(hudtable.hudids[name].text, "z_index", 10)
+		-- Safely grab positioning data
+		local index = math.floor(hb.get_hudbar_position_index(identifier))
+		local pos, offset
+		if barindex_to_pos_and_offset then
+			pos, offset = barindex_to_pos_and_offset(index)
+		else
+			pos = hb.settings.pos_left
+			offset = hb.settings.start_offset_left
 		end
+		
+		-- Re-add text element completely so it registers after the engine's built-in bars
+		local new_text_id = player:hud_add({
+			hud_elem_type = "text",
+			position = pos,
+			text = state.text or "",
+			alignment = {x=1,y=1},
+			number = 0xFFFFFF,
+			direction = 0,
+			offset = { x = offset.x + 2,  y = offset.y - 1},
+		})
+		
+		-- Swap IDs and drop the old buried text element safely
+		hudtable.hudids[name].text = new_text_id
+		player:hud_remove(old_text_id)
 	end
-	return success
 end
 
--- 2. LOOP REFRESH (Caps current HP to Max HP so it doesn't infinitely climb)
+-- 1. HOOK JOIN: Force text layering right after client connection establishes
+minetest.register_on_joinplayer(function(player)
+	minetest.after(0.5, function()
+		if player and player:is_player() then
+			force_text_on_top(player, "health")
+			force_text_on_top(player, "breath")
+		end
+	end)
+end)
+
+-- 2. LOOP REFRESH (Caps current HP to Max HP safely)
 local sync_timer = 0
 minetest.register_globalstep(function(dtime)
 	sync_timer = sync_timer + dtime
@@ -654,8 +682,7 @@ minetest.register_globalstep(function(dtime)
 	end
 end)
 
--- 3. COMMAND: CLEAR HUD CACHE
--- Completely purges and resets the live runtime state data produced by the mod
+-- 3. COMMAND: CLEAR HUD CACHE (Safe version with fixed cleanup logic)
 minetest.register_chatcommand("clearhudcache", {
 	params = "",
 	description = "Completely flush and rebuild the active HUD cache state for all online players",
@@ -663,14 +690,11 @@ minetest.register_chatcommand("clearhudcache", {
 	func = function(name, param)
 		local count = 0
 		
-		-- Loop through every single tracked status bar type registered in the mod
 		for identifier, hudtable in pairs(hb.hudtables) do
 			if hudtable and hudtable.hudids and hudtable.hudstate then
-				-- Wipe out the active data properties stored for this bar
 				for player_name, ids in pairs(hudtable.hudids) do
 					local target_player = minetest.get_player_by_name(player_name)
 					if target_player then
-						-- Physically pull down old glitchy HUD layouts from the client screen
 						if ids.bg then target_player:hud_remove(ids.bg) end
 						if ids.icon then target_player:hud_remove(ids.icon) end
 						if ids.bar then target_player:hud_remove(ids.bar) end
@@ -678,17 +702,14 @@ minetest.register_chatcommand("clearhudcache", {
 					end
 				end
 				
-				-- Clean out the core data tables inside memory completely
 				hudtable.hudids = {}
 				hudtable.hudstate = {}
 				count = count + 1
 			end
 		end
 		
-		-- Re-trigger a fresh initialization block for all current players
 		for _, player in pairs(minetest.get_connected_players()) do
 			if player and player:is_player() then
-				-- Re-run the local core mod init logic to populate clean cache lines
 				if minetest.setting_getbool("enable_damage") or hb.settings.forceload_default_hudbars then
 					local hide = not minetest.setting_getbool("enable_damage")
 					hb.init_hudbar(player, "health", player:get_hp(), nil, hide)
@@ -698,12 +719,15 @@ minetest.register_chatcommand("clearhudcache", {
 					hb.init_hudbar(player, "breath", math.min(breath, 10), nil, hide_breath or hide)
 				end
 				
-				-- If external mods added custom bars (Mana/Satiation), force them to re-init
 				for identifier, hudtable in pairs(hb.hudtables) do
 					if identifier ~= "health" and identifier ~= "breath" then
 						hb.init_hudbar(player, identifier, hudtable.default_start_value, hudtable.default_start_max, hudtable.default_start_hidden)
 					end
 				end
+				
+				-- Ensure layers stay pristine post-cache flush
+				force_text_on_top(player, "health")
+				force_text_on_top(player, "breath")
 			end
 		end
 		
