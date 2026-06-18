@@ -613,36 +613,22 @@ minetest.register_globalstep(function(dtime)
 end)
 
 -- =====================================================================
--- THE FIX: FORCE TEXT NUMBER OVERLAY & PREVENT OVER-HEALING
+-- REPAIRED LAYER SYNC & UTILITIES
 -- =====================================================================
 
--- 1. FIX THE TEXT OVERLAY (Forces numbers to sit on top of the health fill texture)
-local original_init_hudbar = hb.init_hudbar
-function hb.init_hudbar(player, identifier, start_value, start_max, start_hidden)
-	local success = original_init_hudbar(player, identifier, start_value, start_max, start_hidden)
+-- 1. LAYER FIX: Forces the text element to sit explicitly on top whenever a bar changes
+local original_change_hudbar = hb.change_hudbar
+function hb.change_hudbar(player, identifier, new_value, new_max_value, new_icon, new_bgicon, new_bar, new_label, new_text_color)
+	-- Run original update logic safely first
+	local success = original_change_hudbar(player, identifier, new_value, new_max_value, new_icon, new_bgicon, new_bar, new_label, new_text_color)
 	
-	if success and player and player:is_player() and hb.settings.bar_type == "progress_bar" then
+	if success and player and player:is_player() then
 		local name = player:get_player_name()
 		local hudtable = hb.get_hudtable(identifier)
 		
+		-- Force the text layer over the builtin progress textures using z_index priority
 		if hudtable and hudtable.hudids[name] and hudtable.hudids[name].text then
-			-- Remove the old buried text element
-			player:hud_remove(hudtable.hudids[name].text)
-			
-			-- Re-create it at the exact same location so it loads LAST (on top)
-			local pos, offset = barindex_to_pos_and_offset(math.floor(hb.get_hudbar_position_index(identifier)))
-			local state = hudtable.hudstate[name]
-			local text = string.format(hudtable.format_string, hudtable.label, state.value, state.max)
-			
-			hudtable.hudids[name].text = player:hud_add({
-				hud_elem_type = "text",
-				position = pos,
-				text = text,
-				alignment = {x=1,y=1},
-				number = 0xFFFFFF, -- Force crisp white text color
-				direction = 0,
-				offset = { x = offset.x + 2,  y = offset.y - 1},
-			})
+			player:hud_change(hudtable.hudids[name].text, "z_index", 10)
 		end
 	end
 	return success
@@ -668,32 +654,59 @@ minetest.register_globalstep(function(dtime)
 	end
 end)
 
--- 3. COMMAND: SET MAX HP
-minetest.register_chatcommand("setmaxhp", {
-	params = "<player> <max_hp>",
-	description = "Set a player's maximum health pool",
-	privs = { server = true }, 
+-- 3. COMMAND: CLEAR HUD CACHE
+-- Completely purges and resets the live runtime state data produced by the mod
+minetest.register_chatcommand("clearhudcache", {
+	params = "",
+	description = "Completely flush and rebuild the active HUD cache state for all online players",
+	privs = { server = true },
 	func = function(name, param)
-		local target_name, hp_str = string.match(param, "([^%s]+)%s+(%d+)")
-		if not target_name or not hp_str then
-			return false, "Usage: /setmaxhp <player> <max_hp>"
-		end
-		local target_player = minetest.get_player_by_name(target_name)
-		if not target_player then
-			return false, "Player '" .. target_name .. "' is not online."
-		end
-		local new_max = tonumber(hp_str)
-		if new_max <= 0 then
-			return false, "Max HP must be greater than 0."
+		local count = 0
+		
+		-- Loop through every single tracked status bar type registered in the mod
+		for identifier, hudtable in pairs(hb.hudtables) do
+			if hudtable and hudtable.hudids and hudtable.hudstate then
+				-- Wipe out the active data properties stored for this bar
+				for player_name, ids in pairs(hudtable.hudids) do
+					local target_player = minetest.get_player_by_name(player_name)
+					if target_player then
+						-- Physically pull down old glitchy HUD layouts from the client screen
+						if ids.bg then target_player:hud_remove(ids.bg) end
+						if ids.icon then target_player:hud_remove(ids.icon) end
+						if ids.bar then target_player:hud_remove(ids.bar) end
+						if ids.text then target_player:hud_remove(ids.text) end
+					end
+				end
+				
+				-- Clean out the core data tables inside memory completely
+				hudtable.hudids = {}
+				hudtable.hudstate = {}
+				count = count + 1
+			end
 		end
 		
-		target_player:set_properties({ hp_max = new_max })
-		if target_player:get_hp() > new_max then
-			target_player:set_hp(new_max)
+		-- Re-trigger a fresh initialization block for all current players
+		for _, player in pairs(minetest.get_connected_players()) do
+			if player and player:is_player() then
+				-- Re-run the local core mod init logic to populate clean cache lines
+				if minetest.setting_getbool("enable_damage") or hb.settings.forceload_default_hudbars then
+					local hide = not minetest.setting_getbool("enable_damage")
+					hb.init_hudbar(player, "health", player:get_hp(), nil, hide)
+					
+					local breath = player:get_breath()
+					local hide_breath = (breath == 11 and hb.settings.autohide_breath)
+					hb.init_hudbar(player, "breath", math.min(breath, 10), nil, hide_breath or hide)
+				end
+				
+				-- If external mods added custom bars (Mana/Satiation), force them to re-init
+				for identifier, hudtable in pairs(hb.hudtables) do
+					if identifier ~= "health" and identifier ~= "breath" then
+						hb.init_hudbar(player, identifier, hudtable.default_start_value, hudtable.default_start_max, hudtable.default_start_hidden)
+					end
+				end
+			end
 		end
 		
-		hb.change_hudbar(target_player, "health", target_player:get_hp(), new_max)
-		minetest.chat_send_player(target_name, name .. " has set your max health to " .. new_max)
-		return true, "Successfully set " .. target_name .. "'s max HP to " .. new_max
+		return true, "Successfully cleared cache for " .. count .. " tracked HUD modules. State completely reinitialized."
 	end,
 })
