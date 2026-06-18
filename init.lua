@@ -612,22 +612,23 @@ minetest.register_globalstep(function(dtime)
 	if timer > 4 then timer = 0 end
 end)
 -- =====================================================================
--- REPAIRED LAYER SYNC, UTILITIES, & PIXEL-PERFECT PIXEL FILL FIX
+-- MASTER HUD FIX: DYNAMIC INTERCEPT FOR HEALTH, MANA, STAMINA & SATIETY
 -- =====================================================================
 
--- 1. FORCE TRUE 100% TEXTURE BOUNDARY FILL (Fixed for 162x18 backgrounds)
+-- 1. FORCE GLOBAL BOUNDARY SCALE (Forces all custom bars to calculate lengths against 162px)
 hb.settings.max_bar_length = 162
 
 local original_value_to_barlength = hb.value_to_barlength
 function hb.value_to_barlength(value, max)
-	-- If any bar reaches full capacity, instantly return the exact background max length width
+	-- If any bar reaches full capacity, force true 162px visual fill
 	if max > 0 and value >= max then
 		return hb.settings.max_bar_length
 	end
 	return original_value_to_barlength(value, max)
 end
 
--- Helper to force text elements to render last
+-- 2. UNIVERSAL TEXT LAYER LAYER SYNC
+-- Completely reconstructs the text layer to force Minetest to render it on top of the bars
 local function force_text_on_top(player, identifier)
 	if not player or not player:is_player() then return end
 	local name = player:get_player_name()
@@ -637,7 +638,6 @@ local function force_text_on_top(player, identifier)
 		local old_text_id = hudtable.hudids[name].text
 		local state = hudtable.hudstate[name]
 		
-		-- Safely grab positioning data
 		local index = math.floor(hb.get_hudbar_position_index(identifier))
 		local pos, offset
 		if barindex_to_pos_and_offset then
@@ -647,34 +647,46 @@ local function force_text_on_top(player, identifier)
 			offset = hb.settings.start_offset_left
 		end
 		
-		-- Re-add text element completely so it registers after the engine's built-in bars
 		local new_text_id = player:hud_add({
 			hud_elem_type = "text",
 			position = pos,
 			text = state.text or "",
 			alignment = {x=1,y=1},
-			number = 0xFFFFFF,
+			number = 0xFFFFFF, -- Clean white overlay
 			direction = 0,
 			offset = { x = offset.x + 2,  y = offset.y - 1},
 		})
 		
-		-- Swap IDs and drop the old buried text element safely
 		hudtable.hudids[name].text = new_text_id
 		player:hud_remove(old_text_id)
 	end
 end
 
--- 2. HOOK JOIN: Force text layering right after client connection establishes
+-- 3. HIJACK CHANGE_HUDBAR (Catches mana/stamina/satiety mods whenever they update values)
+local original_change_hudbar = hb.change_hudbar
+function hb.change_hudbar(player, identifier, new_value, new_max_value, ...)
+	local success = original_change_hudbar(player, identifier, new_value, new_max_value, ...)
+	
+	-- Immediately drag the text layer to the front right after any bar value shifts
+	if success and player and player:is_player() then
+		force_text_on_top(player, identifier)
+	end
+	
+	return success
+end
+
+-- 4. INITIAL CONNECT SYNC (Clean setup for custom bars on join)
 minetest.register_on_joinplayer(function(player)
-	minetest.after(0.5, function()
+	minetest.after(0.8, function()
 		if player and player:is_player() then
-			force_text_on_top(player, "health")
-			force_text_on_top(player, "breath")
+			for identifier, _ in pairs(hb.hudtables) do
+				force_text_on_top(player, identifier)
+			end
 		end
 	end)
 end)
 
--- 3. LOOP REFRESH (Caps current HP to Max HP safely)
+-- 5. ENGINE CAP REFRESH (Maintains standard local state security)
 local sync_timer = 0
 minetest.register_globalstep(function(dtime)
 	sync_timer = sync_timer + dtime
