@@ -612,8 +612,20 @@ minetest.register_globalstep(function(dtime)
 	if timer > 4 then timer = 0 end
 end)
 -- =====================================================================
--- REPAIRED LAYER SYNC & UTILITIES (FIXED FOR ENGINE BUILT-INS)
+-- REPAIRED LAYER SYNC, UTILITIES, & PIXEL-PERFECT PIXEL FILL FIX
 -- =====================================================================
+
+-- 1. FORCE TRUE 100% TEXTURE BOUNDARY FILL (Fixed for 162x18 backgrounds)
+hb.settings.max_bar_length = 162
+
+local original_value_to_barlength = hb.value_to_barlength
+function hb.value_to_barlength(value, max)
+	-- If any bar reaches full capacity, instantly return the exact background max length width
+	if max > 0 and value >= max then
+		return hb.settings.max_bar_length
+	end
+	return original_value_to_barlength(value, max)
+end
 
 -- Helper to force text elements to render last
 local function force_text_on_top(player, identifier)
@@ -652,7 +664,7 @@ local function force_text_on_top(player, identifier)
 	end
 end
 
--- 1. HOOK JOIN: Force text layering right after client connection establishes
+-- 2. HOOK JOIN: Force text layering right after client connection establishes
 minetest.register_on_joinplayer(function(player)
 	minetest.after(0.5, function()
 		if player and player:is_player() then
@@ -662,7 +674,7 @@ minetest.register_on_joinplayer(function(player)
 	end)
 end)
 
--- 2. LOOP REFRESH (Caps current HP to Max HP safely)
+-- 3. LOOP REFRESH (Caps current HP to Max HP safely)
 local sync_timer = 0
 minetest.register_globalstep(function(dtime)
 	sync_timer = sync_timer + dtime
@@ -681,56 +693,3 @@ minetest.register_globalstep(function(dtime)
 		end
 	end
 end)
-
--- 3. COMMAND: CLEAR HUD CACHE (Safe version with fixed cleanup logic)
-minetest.register_chatcommand("clearhudcache", {
-	params = "",
-	description = "Completely flush and rebuild the active HUD cache state for all online players",
-	privs = { server = true },
-	func = function(name, param)
-		local count = 0
-		
-		for identifier, hudtable in pairs(hb.hudtables) do
-			if hudtable and hudtable.hudids and hudtable.hudstate then
-				for player_name, ids in pairs(hudtable.hudids) do
-					local target_player = minetest.get_player_by_name(player_name)
-					if target_player then
-						if ids.bg then target_player:hud_remove(ids.bg) end
-						if ids.icon then target_player:hud_remove(ids.icon) end
-						if ids.bar then target_player:hud_remove(ids.bar) end
-						if ids.text then target_player:hud_remove(ids.text) end
-					end
-				end
-				
-				hudtable.hudids = {}
-				hudtable.hudstate = {}
-				count = count + 1
-			end
-		end
-		
-		for _, player in pairs(minetest.get_connected_players()) do
-			if player and player:is_player() then
-				if minetest.setting_getbool("enable_damage") or hb.settings.forceload_default_hudbars then
-					local hide = not minetest.setting_getbool("enable_damage")
-					hb.init_hudbar(player, "health", player:get_hp(), nil, hide)
-					
-					local breath = player:get_breath()
-					local hide_breath = (breath == 11 and hb.settings.autohide_breath)
-					hb.init_hudbar(player, "breath", math.min(breath, 10), nil, hide_breath or hide)
-				end
-				
-				for identifier, hudtable in pairs(hb.hudtables) do
-					if identifier ~= "health" and identifier ~= "breath" then
-						hb.init_hudbar(player, identifier, hudtable.default_start_value, hudtable.default_start_max, hudtable.default_start_hidden)
-					end
-				end
-				
-				-- Ensure layers stay pristine post-cache flush
-				force_text_on_top(player, "health")
-				force_text_on_top(player, "breath")
-			end
-		end
-		
-		return true, "Successfully cleared cache for " .. count .. " tracked HUD modules. State completely reinitialized."
-	end,
-})
